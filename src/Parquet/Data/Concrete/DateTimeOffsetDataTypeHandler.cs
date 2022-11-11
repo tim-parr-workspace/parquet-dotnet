@@ -45,6 +45,7 @@ namespace Parquet.Data.Concrete
                case DateTimeFormat.Date:
                   tse.Type = Thrift.Type.INT32;
                   tse.Converted_type = Thrift.ConvertedType.DATE;
+                  tse.Repetition_type = Thrift.FieldRepetitionType.OPTIONAL;
                   break;
 
                //other cases are just default
@@ -129,7 +130,7 @@ namespace Parquet.Data.Concrete
 
       private void WriteAsInt32(BinaryWriter writer, ArrayView values, DataColumnStatistics dataColumnStatistics)
       {
-         foreach (DateTimeOffset dto in values.GetValuesAndReturnArray(dataColumnStatistics, this, this))
+         foreach (DateTimeOffset dto in values.GetValuesAndReturnArray<DateTimeOffset>(dataColumnStatistics, this, this))
          {
             WriteAsInt32(writer, dto);
          }
