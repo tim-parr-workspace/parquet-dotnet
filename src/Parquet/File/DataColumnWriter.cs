@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Parquet.Data;
 using Parquet.File.Values;
+using IronCompress;
 
 namespace Parquet.File {
     class DataColumnWriter {
@@ -114,8 +115,8 @@ namespace Parquet.File {
                 uncompressedData = ms.ToArray();
             }
 
-            using(IronCompress.DataBuffer compressedData = _compressionMethod == CompressionMethod.None
-                ? new IronCompress.DataBuffer(uncompressedData)
+            using(DataBuffer compressedData = _compressionMethod == CompressionMethod.None
+                ? new DataBuffer(uncompressedData)
                 : Compressor.Compress(_compressionMethod, uncompressedData)) {
 
                 Thrift.PageHeader dataPageHeader = _footer.CreateDataPage(column.Count);

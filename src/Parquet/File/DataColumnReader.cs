@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Parquet.Data;
 using Parquet.File.Values;
+using IronCompress;
 
 namespace Parquet.File {
     class DataColumnReader {
@@ -134,7 +135,7 @@ namespace Parquet.File {
             return finalColumn;
         }
 
-        private async Task<IronCompress.DataBuffer> ReadPageData(Thrift.PageHeader ph) {
+        private async Task<DataBuffer> ReadPageData(Thrift.PageHeader ph) {
 
             byte[] data = ArrayPool<byte>.Shared.Rent(ph.Compressed_page_size);
 
@@ -147,7 +148,7 @@ namespace Parquet.File {
             while(remainingBytes != 0);
 
             if(_thriftColumnChunk.Meta_data.Codec == Thrift.CompressionCodec.UNCOMPRESSED) {
-                return new IronCompress.DataBuffer(data, ph.Compressed_page_size, ArrayPool<byte>.Shared);
+                return new DataBuffer(data, ph.Compressed_page_size, ArrayPool<byte>.Shared);
             }
 
             return Compressor.Decompress((CompressionMethod)(int)_thriftColumnChunk.Meta_data.Codec,
@@ -161,7 +162,7 @@ namespace Parquet.File {
             }
 
             //Dictionary page format: the entries in the dictionary - in dictionary order - using the plain encoding.
-            using(IronCompress.DataBuffer bytes = await ReadPageData(ph)) {
+            using(DataBuffer bytes = await ReadPageData(ph)) {
                 //todo: this is ugly, but will be removed once other parts are migrated to System.Memory
                 using(var ms = new MemoryStream(bytes.AsSpan().ToArray())) {
                     using(var dataReader = new BinaryReader(ms)) {
@@ -187,7 +188,7 @@ namespace Parquet.File {
         }
 
         private async Task ReadDataPage(Thrift.PageHeader ph, ColumnRawData cd, long maxValues) {
-            using(IronCompress.DataBuffer bytes = await ReadPageData(ph)) {
+            using(DataBuffer bytes = await ReadPageData(ph)) {
                 //todo: this is ugly, but will be removed once other parts are migrated to System.Memory
                 using(var ms = new MemoryStream(bytes.AsSpan().ToArray())) {
                     int valueCount = ph.Data_page_header.Num_values;
