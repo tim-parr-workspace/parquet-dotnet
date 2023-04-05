@@ -1,11 +1,12 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Parquet._3rdparty;
-using Parquet.Data;
+using Parquet.Schema;
 using Parquet.File;
 
 namespace Parquet {
@@ -16,8 +17,8 @@ namespace Parquet {
     public class ParquetWriter : ParquetActor, IDisposable
 #pragma warning restore CA1063 // Implement IDisposable Correctly
     {
-        private ThriftFooter _footer;
-        private readonly Schema _schema;
+        private ThriftFooter? _footer;
+        private readonly ParquetSchema _schema;
         private readonly ParquetOptions _formatOptions;
         private bool _dataWritten;
         private readonly List<ParquetRowGroupWriter> _openedWriters = new List<ParquetRowGroupWriter>();
@@ -27,8 +28,17 @@ namespace Parquet {
         /// </summary>
         public CompressionMethod CompressionMethod { get; set; } = CompressionMethod.Snappy;
 
-        private ParquetWriter(Schema schema, Stream output, ParquetOptions formatOptions = null, bool append = false)
-           : base(output?.CanSeek == true ? output : new MeteredWriteStream(output)) {
+        /// <summary>
+        /// Level of compression
+        /// </summary>
+#if NET6_0_OR_GREATER
+        public CompressionLevel CompressionLevel = CompressionLevel.SmallestSize;
+#else
+        public CompressionLevel CompressionLevel = CompressionLevel.Optimal;
+#endif
+
+        private ParquetWriter(ParquetSchema schema, Stream output, ParquetOptions? formatOptions = null, bool append = false)
+           : base(output.CanSeek == true ? output : new MeteredWriteStream(output)) {
             if(output == null)
                 throw new ArgumentNullException(nameof(output));
 
@@ -49,7 +59,7 @@ namespace Parquet {
         /// <exception cref="ArgumentNullException">Output is null.</exception>
         /// <exception cref="ArgumentException">Output stream is not writeable</exception>
         public static async Task<ParquetWriter> CreateAsync(
-            Schema schema, Stream output, ParquetOptions formatOptions = null, bool append = false,
+            ParquetSchema schema, Stream output, ParquetOptions? formatOptions = null, bool append = false,
             CancellationToken cancellationToken = default) {
             var writer = new ParquetWriter(schema, output, formatOptions, append);
             await writer.PrepareFileAsync(append, cancellationToken);
@@ -62,8 +72,8 @@ namespace Parquet {
         public ParquetRowGroupWriter CreateRowGroup() {
             _dataWritten = true;
 
-            var writer = new ParquetRowGroupWriter(_schema, Stream, ThriftStream, _footer,
-               CompressionMethod, _formatOptions);
+            var writer = new ParquetRowGroupWriter(_schema, Stream, ThriftStream, _footer!,
+               CompressionMethod, _formatOptions, CompressionLevel);
 
             _openedWriters.Add(writer);
 
@@ -74,8 +84,8 @@ namespace Parquet {
         /// Gets custom key-value pairs for metadata
         /// </summary>
         public IReadOnlyDictionary<string, string> CustomMetadata {
-            get => _footer.CustomMetadata;
-            set { _footer.CustomMetadata = value.ToDictionary(p => p.Key, p => p.Value); }
+            get => _footer!.CustomMetadata;
+            set => _footer!.CustomMetadata = value.ToDictionary(p => p.Key, p => p.Value);
         }
 
         private async Task PrepareFileAsync(bool append, CancellationToken cancellationToken) {
@@ -83,14 +93,17 @@ namespace Parquet {
                 if(!Stream.CanSeek)
                     throw new IOException("destination stream must be seekable for append operations.");
 
-                ValidateFile();
+                if(Stream.Length == 0)
+                    throw new IOException($"you can only append to existing streams, but current stream is empty.");
+
+                await ValidateFileAsync();
 
                 Thrift.FileMetaData fileMeta = await ReadMetadataAsync(cancellationToken);
                 _footer = new ThriftFooter(fileMeta);
 
                 ValidateSchemasCompatible(_footer, _schema);
 
-                GoBeforeFooter();
+                await GoBeforeFooterAsync();
             }
             else {
                 if(_footer == null) {
@@ -107,8 +120,8 @@ namespace Parquet {
             }
         }
 
-        private void ValidateSchemasCompatible(ThriftFooter footer, Schema schema) {
-            Schema existingSchema = footer.CreateModelSchema(_formatOptions);
+        private void ValidateSchemasCompatible(ThriftFooter footer, ParquetSchema schema) {
+            ParquetSchema existingSchema = footer.CreateModelSchema(_formatOptions);
 
             if(!schema.Equals(existingSchema)) {
                 string reason = schema.GetNotEqualsMessage(existingSchema, "appending", "existing");
@@ -116,9 +129,7 @@ namespace Parquet {
             }
         }
 
-        private void WriteMagic() {
-            Stream.Write(MagicBytes, 0, MagicBytes.Length);
-        }
+        private void WriteMagic() => Stream.Write(MagicBytes, 0, MagicBytes.Length);
 
         /// <summary>
         /// Disposes the writer and writes the file footer.
@@ -129,13 +140,13 @@ namespace Parquet {
         {
             if(_dataWritten) {
                 //update row count (on append add row count to existing metadata)
-                _footer.Add(_openedWriters.Sum(w => w.RowCount ?? 0));
+                _footer!.Add(_openedWriters.Sum(w => w.RowCount ?? 0));
             }
 
             //finalize file
             //long size = _footer.WriteAsync(ThriftStream).Result;
 
-            var sizeTask = Task.Run(() => _footer.WriteAsync(ThriftStream));
+            var sizeTask = Task.Run(() => _footer!.WriteAsync(ThriftStream));
             sizeTask.Wait();
             long size = sizeTask.Result;
 

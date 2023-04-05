@@ -3,9 +3,10 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using Parquet.Data;
-using Parquet.Data.Rows;
 using System.Threading.Tasks;
 using System.Threading;
+using Parquet.Schema;
+using Parquet.Rows;
 
 namespace Parquet {
     /// <summary>
@@ -13,28 +14,29 @@ namespace Parquet {
     /// </summary>
     public class ParquetReader : ParquetActor, IDisposable {
         private readonly Stream _input;
-        private Thrift.FileMetaData _meta;
+        private Thrift.FileMetaData? _meta;
         private ThriftFooter _footer;
         private readonly ParquetOptions _parquetOptions;
-        private readonly List<ParquetRowGroupReader> _groupReaders = new List<ParquetRowGroupReader>();
+        private readonly List<ParquetRowGroupReader> _groupReaders = new();
         private readonly bool _leaveStreamOpen;
 
-        private ParquetReader(Stream input, bool leaveStreamOpen) : base(input) {
+        private ParquetReader(Stream input, ParquetOptions? parquetOptions = null, bool leaveStreamOpen = true) : base(input) {
             _input = input ?? throw new ArgumentNullException(nameof(input));
             _leaveStreamOpen = leaveStreamOpen;
-        }
 
-        private ParquetReader(Stream input, ParquetOptions parquetOptions = null, bool leaveStreamOpen = true) : this(input, leaveStreamOpen) {
             if(!input.CanRead || !input.CanSeek)
                 throw new ArgumentException("stream must be readable and seekable", nameof(input));
             if(_input.Length <= 8)
                 throw new IOException("not a Parquet file (size too small)");
 
             _parquetOptions = parquetOptions ?? new ParquetOptions();
+
+            // _footer will be initialised right now in the InitialiseAsync
+            _footer = ThriftFooter.Empty;
         }
 
         private async Task InitialiseAsync(CancellationToken cancellationToken) {
-            ValidateFile();
+            await ValidateFileAsync();
 
             //read metadata instantly, now
             _meta = await ReadMetadataAsync(cancellationToken);
@@ -51,7 +53,7 @@ namespace Parquet {
         /// <param name="cancellationToken"></param>
         /// <returns></returns>
         public static async Task<ParquetReader> CreateAsync(string filePath,
-            ParquetOptions parquetOptions = null,
+            ParquetOptions? parquetOptions = null,
             CancellationToken cancellationToken = default) {
             Stream fs = System.IO.File.OpenRead(filePath);
             var reader = new ParquetReader(fs, parquetOptions, false);
@@ -70,7 +72,7 @@ namespace Parquet {
         /// <exception cref="ArgumentException">stream must be readable and seekable - input</exception>
         /// <exception cref="IOException">not a Parquet file (size too small)</exception>
         public static async Task<ParquetReader> CreateAsync(
-            Stream input, ParquetOptions parquetOptions = null, bool leaveStreamOpen = true,
+            Stream input, ParquetOptions? parquetOptions = null, bool leaveStreamOpen = true,
             CancellationToken cancellationToken = default) {
 
             var reader = new ParquetReader(input, parquetOptions, leaveStreamOpen);
@@ -89,7 +91,7 @@ namespace Parquet {
         /// <summary>
         /// Reads entire file as a table
         /// </summary>
-        public static async Task<Table> ReadTableFromFileAsync(string filePath, ParquetOptions parquetOptions = null) {
+        public static async Task<Table> ReadTableFromFileAsync(string filePath, ParquetOptions? parquetOptions = null) {
             using(ParquetReader reader = await CreateAsync(filePath, parquetOptions)) {
                 return await reader.ReadAsTableAsync();
             }
@@ -98,7 +100,7 @@ namespace Parquet {
         /// <summary>
         /// Reads entire stream as a table
         /// </summary>
-        public static async Task<Table> ReadTableFromStreamAsync(Stream stream, ParquetOptions parquetOptions = null) {
+        public static async Task<Table> ReadTableFromStreamAsync(Stream stream, ParquetOptions? parquetOptions = null) {
             using(ParquetReader reader = await CreateAsync(stream, parquetOptions)) {
                 return await reader.ReadAsTableAsync();
             }
@@ -109,17 +111,17 @@ namespace Parquet {
         /// <summary>
         /// Gets the number of rows groups in this file
         /// </summary>
-        public int RowGroupCount => _meta.Row_groups.Count;
+        public int RowGroupCount => _meta?.Row_groups.Count ?? -1;
 
         /// <summary>
         /// Reader schema
         /// </summary>
-        public Schema Schema => _footer.CreateModelSchema(_parquetOptions);
+        public ParquetSchema Schema => _footer!.CreateModelSchema(_parquetOptions);
 
         /// <summary>
         /// Internal parquet metadata
         /// </summary>
-        public Thrift.FileMetaData ThriftMetadata => _meta;
+        public Thrift.FileMetaData? ThriftMetadata => _meta;
 
         /// <summary>
         /// 
@@ -136,6 +138,9 @@ namespace Parquet {
         /// <param name="rowGroupIndex">Index of the row group. Default to the first row group if not specified.</param>
         /// <returns></returns>
         public async Task<DataColumn[]> ReadEntireRowGroupAsync(int rowGroupIndex = 0) {
+            if(Schema == null)
+                throw new InvalidOperationException("schema is not initialised yet");
+
             DataField[] dataFields = Schema.GetDataFields();
             DataColumn[] result = new DataColumn[dataFields.Length];
 
@@ -151,9 +156,11 @@ namespace Parquet {
 
         private void InitRowGroupReaders() {
             _groupReaders.Clear();
+            if(_meta?.Row_groups == null)
+                throw new InvalidOperationException("no row groups in metadata");
 
             foreach(Thrift.RowGroup thriftRowGroup in _meta.Row_groups) {
-                _groupReaders.Add(new ParquetRowGroupReader(thriftRowGroup, _footer, Stream, ThriftStream, _parquetOptions));
+                _groupReaders.Add(new ParquetRowGroupReader(thriftRowGroup, _footer!, Stream, ThriftStream, _parquetOptions));
             }
         }
 

@@ -1,12 +1,14 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Parquet.Data;
 using Parquet.File;
-using Parquet.File.Values;
+using Parquet.Schema;
+using FieldPath = Parquet.Schema.FieldPath;
 
 namespace Parquet {
     /// <summary>
@@ -16,27 +18,30 @@ namespace Parquet {
     public class ParquetRowGroupWriter : IDisposable
 #pragma warning restore CA1063 // Implement IDisposable Correctly
     {
-        private readonly Schema _schema;
+        private readonly ParquetSchema _schema;
         private readonly Stream _stream;
         private readonly ThriftStream _thriftStream;
         private readonly ThriftFooter _footer;
         private readonly CompressionMethod _compressionMethod;
+        private readonly CompressionLevel _compressionLevel;
         private readonly ParquetOptions _formatOptions;
         private readonly Thrift.RowGroup _thriftRowGroup;
         private readonly Thrift.SchemaElement[] _thschema;
         private int _colIdx;
 
-        internal ParquetRowGroupWriter(Schema schema,
+        internal ParquetRowGroupWriter(ParquetSchema schema,
            Stream stream,
            ThriftStream thriftStream,
            ThriftFooter footer,
            CompressionMethod compressionMethod,
-           ParquetOptions formatOptions) {
+           ParquetOptions formatOptions,
+           CompressionLevel compressionLevel) {
             _schema = schema ?? throw new ArgumentNullException(nameof(schema));
             _stream = stream ?? throw new ArgumentNullException(nameof(stream));
             _thriftStream = thriftStream ?? throw new ArgumentNullException(nameof(thriftStream));
             _footer = footer ?? throw new ArgumentNullException(nameof(footer));
             _compressionMethod = compressionMethod;
+            _compressionLevel = compressionLevel;
             _formatOptions = formatOptions;
 
             _thriftRowGroup = _footer.AddRowGroup();
@@ -65,16 +70,16 @@ namespace Parquet {
             if(!column.Field.Equals(tse)) {
                 throw new ArgumentException($"cannot write this column, expected '{tse.Name}', passed: '{column.Field.Name}'", nameof(column));
             }
-            IDataTypeHandler dataTypeHandler = DataTypeFactory.Match(tse, _formatOptions);
             _colIdx += 1;
 
-            List<string> path = _footer.GetPath(tse);
+            FieldPath path = _footer.GetPath(tse);
 
             var writer = new DataColumnWriter(_stream, _thriftStream, _footer, tse,
                _compressionMethod,
-               (int)(RowCount ?? 0));
+               _formatOptions,
+               _compressionLevel);
 
-            Thrift.ColumnChunk chunk = await writer.WriteAsync(path, column, dataTypeHandler, cancellationToken);
+            Thrift.ColumnChunk chunk = await writer.WriteAsync(path, column, cancellationToken);
             _thriftRowGroup.Columns.Add(chunk);
 
         }

@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Parquet.Data;
 using Parquet.File;
+using Parquet.Schema;
 
 namespace Parquet {
     /// <summary>
@@ -15,14 +16,14 @@ namespace Parquet {
         private readonly ThriftFooter _footer;
         private readonly Stream _stream;
         private readonly ThriftStream _thriftStream;
-        private readonly ParquetOptions _parquetOptions;
-        private readonly Dictionary<string, Thrift.ColumnChunk> _pathToChunk = new Dictionary<string, Thrift.ColumnChunk>();
+        private readonly ParquetOptions? _parquetOptions;
+        private readonly Dictionary<FieldPath, Thrift.ColumnChunk> _pathToChunk = new();
 
         internal ParquetRowGroupReader(
            Thrift.RowGroup rowGroup,
            ThriftFooter footer,
            Stream stream, ThriftStream thriftStream,
-           ParquetOptions parquetOptions) {
+           ParquetOptions? parquetOptions) {
             _rowGroup = rowGroup ?? throw new ArgumentNullException(nameof(rowGroup));
             _footer = footer ?? throw new ArgumentNullException(nameof(footer));
             _stream = stream ?? throw new ArgumentNullException(nameof(stream));
@@ -31,7 +32,7 @@ namespace Parquet {
 
             //cache chunks
             foreach(Thrift.ColumnChunk thriftChunk in _rowGroup.Columns) {
-                string path = thriftChunk.GetPath();
+                FieldPath path = thriftChunk.GetPath();
                 _pathToChunk[path] = thriftChunk;
             }
         }
@@ -51,7 +52,7 @@ namespace Parquet {
             if(field == null)
                 throw new ArgumentNullException(nameof(field));
 
-            if(!_pathToChunk.TryGetValue(field.Path, out Thrift.ColumnChunk columnChunk)) {
+            if(!_pathToChunk.TryGetValue(field.Path, out Thrift.ColumnChunk? columnChunk)) {
                 throw new ParquetException($"'{field.Path}' does not exist in this file");
             }
 

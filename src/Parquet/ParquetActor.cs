@@ -1,82 +1,67 @@
 ﻿using System;
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using Parquet.Extensions;
 using Parquet.File;
 
-namespace Parquet
-{
-   /// <summary>
-   /// Base class for reader and writer
-   /// </summary>
-   public class ParquetActor
-   {
+namespace Parquet {
+    /// <summary>
+    /// Base class for reader and writer
+    /// </summary>
+    public class ParquetActor {
 #pragma warning disable IDE1006
-      internal const string MagicString = "PAR1";
-      internal static readonly byte[] MagicBytes = Encoding.ASCII.GetBytes(MagicString);
+        internal static readonly byte[] MagicBytes = Encoding.ASCII.GetBytes("PAR1");
 #pragma warning restore IDE1006
 
-      private readonly Stream _fileStream;
-      private BinaryReader _binaryReader;
-      private BinaryWriter _binaryWriter;
-      private ThriftStream _thriftStream;
+        private readonly Stream _fileStream;
+        private BinaryWriter? _binaryWriter;
+        private ThriftStream? _thriftStream;
 
-      internal ParquetActor(Stream fileStream)
-      {
-         _fileStream = fileStream ?? throw new ArgumentNullException(nameof(fileStream));
-      }
+        internal ParquetActor(Stream? fileStream) =>
+            _fileStream = fileStream ?? throw new ArgumentNullException(nameof(fileStream));
 
-      /// <summary>
-      /// Original stream to write or read
-      /// </summary>
-      protected Stream Stream => _fileStream;
+        /// <summary>
+        /// Original stream to write or read
+        /// </summary>
+        protected Stream Stream => _fileStream;
 
-      internal BinaryReader Reader => _binaryReader ?? (_binaryReader = new BinaryReader(_fileStream));
+        internal BinaryWriter Writer => _binaryWriter ??= new BinaryWriter(_fileStream);
 
-      internal BinaryWriter Writer => _binaryWriter ?? (_binaryWriter = new BinaryWriter(_fileStream));
+        internal ThriftStream ThriftStream => _thriftStream ??= new ThriftStream(_fileStream);
 
-      internal ThriftStream ThriftStream => _thriftStream ?? (_thriftStream = new ThriftStream(_fileStream));
+        /// <summary>
+        /// Validates that this file is a valid parquet file by reading head and tail of it
+        /// </summary>
+        /// <returns></returns>
+        /// <exception cref="IOException"></exception>
+        protected async Task ValidateFileAsync() {
+            _fileStream.Seek(0, SeekOrigin.Begin);
+            byte[] head = await _fileStream.ReadBytesExactlyAsync(4);
 
-      internal void ValidateFile()
-      {
-         _fileStream.Seek(0, SeekOrigin.Begin);
-         char[] head = Reader.ReadChars(4);
-         string shead = new string(head);
-         _fileStream.Seek(-4, SeekOrigin.End);
-         char[] tail = Reader.ReadChars(4);
-         string stail = new string(tail);
-         if (shead != MagicString)
-            throw new IOException($"not a Parquet file(head is '{shead}')");
-         if (stail != MagicString)
-            throw new IOException($"not a Parquet file(tail is '{stail}')");
-      }
+            _fileStream.Seek(-4, SeekOrigin.End);
+            byte[] tail = await _fileStream.ReadBytesExactlyAsync(4);
 
-      internal async Task<Thrift.FileMetaData> ReadMetadataAsync(CancellationToken cancellationToken = default)
-      {
-         GoBeforeFooter();
+            if(!MagicBytes.SequenceEqual(head) || !MagicBytes.SequenceEqual(tail))
+                throw new IOException($"not a parquet file, head: {head.ToHexString()}, tail: {tail.ToHexString()}");
+        }
 
-         return await ThriftStream.ReadAsync<Thrift.FileMetaData>(cancellationToken);
-      }
+        internal async Task<Thrift.FileMetaData> ReadMetadataAsync(CancellationToken cancellationToken = default) {
+            await GoBeforeFooterAsync();
+            return await ThriftStream.ReadAsync<Thrift.FileMetaData>(cancellationToken);
+        }
 
-      internal void GoToBeginning()
-      {
-         _fileStream.Seek(0, SeekOrigin.Begin);
-      }
+        internal async ValueTask<int> GoBeforeFooterAsync() {
+            //go to -4 bytes (PAR1) -4 bytes (footer length number)
+            _fileStream.Seek(-8, SeekOrigin.End);
+            int footerLength = await _fileStream.ReadInt32Async();
 
-      internal void GoToEnd()
-      {
-         _fileStream.Seek(0, SeekOrigin.End);
-      }
+            //set just before footer starts
+            _fileStream.Seek(-8 - footerLength, SeekOrigin.End);
 
-      internal void GoBeforeFooter()
-      {
-         //go to -4 bytes (PAR1) -4 bytes (footer length number)
-         _fileStream.Seek(-8, SeekOrigin.End);
-         int footerLength = Reader.ReadInt32();
-
-         //set just before footer starts
-         _fileStream.Seek(-8 - footerLength, SeekOrigin.End);
-      }
-   }
+            return footerLength;
+        }
+    }
 }
